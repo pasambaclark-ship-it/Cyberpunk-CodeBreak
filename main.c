@@ -3,8 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
-//gcc main.c -o main.exe -IC:\raylib\raylib\src -LC:\raylib\raylib\src -lraylib -lopengl32 -lgdi32 -lwinmm
+//gcc main.c -o main.exe -IC:\raylib\raylib\src -LC:\raylib\raylib\src -lraylib -lopengl32 -lgdi32 -lwinmm -lm
 //.\main.exe
 
 // ============================================================
@@ -15,7 +16,7 @@
 #define SCREEN_HEIGHT 800
 
 #define MAX_HISTORY 100
-#define MAX_ALIAS 50
+#define MAX_ALIAS 30
 #define MISSION_COUNT 15
 
 // ============================================================
@@ -72,6 +73,7 @@ typedef struct
 
 typedef enum
 {
+    SCREEN_LOADING,
     SCREEN_ALIAS,
     SCREEN_MENU,
     SCREEN_MISSIONS,
@@ -82,7 +84,7 @@ typedef enum
 
 } GameScreen;
 
-GameScreen currentScreen = SCREEN_ALIAS;
+GameScreen currentScreen = SCREEN_LOADING;
 
 // ============================================================
 // GLOBAL VARIABLES
@@ -287,6 +289,18 @@ int gameRunning = true;
 char aliasInput[MAX_ALIAS] = "";
 int aliasLength = 0;
 
+// Animation and optional audio effects. Sound files are safe to omit.
+#define FX_PARTICLE_COUNT 72
+typedef struct { float x, y, speed, size, phase; } FxParticle;
+static FxParticle fxParticles[FX_PARTICLE_COUNT];
+static float fxTime = 0.0f;
+static float loadingTime = 0.0f;
+static float transitionFlash = 0.0f;
+static float resultEffectTime = 0.0f;
+static bool audioReady = false;
+typedef struct { Sound hover, click, success, failure, transition; } GameSounds;
+static GameSounds gameSounds = { 0 };
+
 // ============================================================
 // COLORS
 // ============================================================
@@ -301,22 +315,110 @@ Color MY_YELLOW = {245, 210, 70, 255};
 Color MY_WHITE = {240, 240, 240, 255};
 Color MY_GRAY = {160, 160, 175, 255};
 
-// Shared neon grid used by every screen.
+static void PlayIfReady(Sound sound)
+{
+    if (audioReady && sound.frameCount > 0) PlaySound(sound);
+}
+
+static Sound LoadOptionalSound(const char *path)
+{
+    if (audioReady && FileExists(path)) return LoadSound(path);
+    return (Sound){ 0 };
+}
+
+static void LoadGameSounds(void)
+{
+    InitAudioDevice();
+    audioReady = IsAudioDeviceReady();
+    if (!audioReady) return;
+    gameSounds.hover = LoadOptionalSound("sounds/hover.wav");
+    gameSounds.click = LoadOptionalSound("sounds/click.wav");
+    gameSounds.success = LoadOptionalSound("sounds/success.wav");
+    gameSounds.failure = LoadOptionalSound("sounds/failure.wav");
+    gameSounds.transition = LoadOptionalSound("sounds/transition.wav");
+}
+
+static void UnloadGameSounds(void)
+{
+    if (!audioReady) return;
+    if (gameSounds.hover.frameCount > 0) UnloadSound(gameSounds.hover);
+    if (gameSounds.click.frameCount > 0) UnloadSound(gameSounds.click);
+    if (gameSounds.success.frameCount > 0) UnloadSound(gameSounds.success);
+    if (gameSounds.failure.frameCount > 0) UnloadSound(gameSounds.failure);
+    if (gameSounds.transition.frameCount > 0) UnloadSound(gameSounds.transition);
+    CloseAudioDevice();
+    audioReady = false;
+}
+
+static void InitEffects(void)
+{
+    for (int i=0; i<FX_PARTICLE_COUNT; i++) {
+        fxParticles[i].x = (float)((i*173 + 31) % SCREEN_WIDTH);
+        fxParticles[i].y = (float)((i*97 + 11) % SCREEN_HEIGHT);
+        fxParticles[i].speed = 12.0f + (float)(i%8)*5.0f;
+        fxParticles[i].size = 1.0f + (float)(i%3);
+        fxParticles[i].phase = (float)i*0.37f;
+    }
+}
+
+static void UpdateEffects(float dt)
+{
+    fxTime += dt;
+    if (transitionFlash > 0.0f) transitionFlash -= dt;
+    if (resultEffectTime > 0.0f) resultEffectTime -= dt;
+    for (int i=0; i<FX_PARTICLE_COUNT; i++) {
+        fxParticles[i].y += fxParticles[i].speed*dt;
+        if (fxParticles[i].y > SCREEN_HEIGHT) {
+            fxParticles[i].y = -5.0f;
+            fxParticles[i].x = (float)((i*173 + (int)(fxTime*19.0f)) % SCREEN_WIDTH);
+        }
+    }
+}
+
+// Shared animated neon grid used by every game screen.
 void DrawCyberBackground(void)
 {
     ClearBackground(BACKGROUND);
-    for (int x = 0; x < SCREEN_WIDTH; x += 40) DrawLine(x, 54, x, SCREEN_HEIGHT, Fade(CYAN, 0.10f));
-    for (int y = 94; y < SCREEN_HEIGHT; y += 40) DrawLine(0, y, SCREEN_WIDTH, y, Fade(CYAN, 0.08f));
-    DrawRectangle(0, 0, SCREEN_WIDTH, 54, Fade(PANEL, 0.98f));
-    DrawLine(0, 54, SCREEN_WIDTH, 54, CYAN);
-    DrawText("CYBERNET // SECURE OPERATIONS", 24, 18, 14, CYAN);
-    DrawText("NETWORK: ENCRYPTED", SCREEN_WIDTH - 230, 18, 14, MY_GREEN);
+    float pulse = 0.5f + 0.5f*sinf(fxTime*2.8f);
+    for (int x=0; x<SCREEN_WIDTH; x+=40) DrawLine(x,54,x,SCREEN_HEIGHT,Fade(CYAN,0.07f));
+    for (int y=94; y<SCREEN_HEIGHT; y+=40) DrawLine(0,y,SCREEN_WIDTH,y,Fade(CYAN,0.06f));
+
+    // Soft falling binary columns and drifting data particles.
+    for (int col=0; col<24; col++) {
+        int x=(col*53+18)%SCREEN_WIDTH;
+        int top=(int)fmodf(fxTime*(38.0f+(col%4)*9.0f)+col*61.0f,SCREEN_HEIGHT+180)-90;
+        for (int row=0; row<4; row++) {
+            int bit=(col+row+(int)(fxTime*1.5f))%2;
+            DrawText(bit ? "1":"0",x,top-row*22,14,Fade(CYAN,0.10f+0.035f*row));
+        }
+    }
+    for (int i=0; i<FX_PARTICLE_COUNT; i++) {
+        float twinkle=0.35f+0.45f*(0.5f+0.5f*sinf(fxTime*2.0f+fxParticles[i].phase));
+        DrawCircleV((Vector2){fxParticles[i].x,fxParticles[i].y},fxParticles[i].size,Fade(i%4 ? CYAN : MY_GREEN,twinkle));
+    }
+
+    // Moving scan beam, corner brackets, and subtle screen scanlines.
+    float beamY=58.0f+fmodf(fxTime*72.0f,(float)(SCREEN_HEIGHT-58));
+    DrawRectangle(0,(int)beamY,SCREEN_WIDTH,2,Fade(CYAN,0.15f));
+    DrawRectangle(0,(int)beamY-5,SCREEN_WIDTH,8,Fade(CYAN,0.035f));
+    for (int y=58; y<SCREEN_HEIGHT; y+=4) DrawLine(0,y,SCREEN_WIDTH,y,Fade(BLACK,0.10f));
+    DrawRectangle(0,0,SCREEN_WIDTH,54,Fade(PANEL,0.98f));
+    DrawLine(0,54,SCREEN_WIDTH,54,Fade(CYAN,0.65f+0.30f*pulse));
+    DrawText("CYBERNET // SECURE OPERATIONS",24,18,14,CYAN);
+    DrawText("NETWORK: ENCRYPTED",SCREEN_WIDTH-230,18,14,MY_GREEN);
+
+    // Animated HUD corner brackets.
+    Color bracket=Fade(CYAN,0.45f+0.45f*pulse);
+    DrawLineEx((Vector2){16,70},(Vector2){16,108},2,bracket); DrawLineEx((Vector2){16,70},(Vector2){54,70},2,bracket);
+    DrawLineEx((Vector2){SCREEN_WIDTH-16,70},(Vector2){SCREEN_WIDTH-16,108},2,bracket); DrawLineEx((Vector2){SCREEN_WIDTH-16,70},(Vector2){SCREEN_WIDTH-54,70},2,bracket);
 }
 
 void DrawNeonPanel(Rectangle rect, Color accent)
 {
-    DrawRectangleRounded(rect, 0.08f, 8, Fade(PANEL, 0.96f));
-    DrawRectangleRoundedLines(rect, 0.08f, 8, accent);
+    float pulse = 0.78f + 0.22f*(0.5f + 0.5f*sinf(fxTime*3.0f + rect.x*0.01f));
+    DrawRectangleRounded(rect, 0.08f, 8, Fade(PANEL, 0.97f));
+    DrawRectangleRoundedLines(rect, 0.08f, 8, Fade(accent,pulse));
+    DrawRectangle((int)rect.x,(int)rect.y,(int)(rect.width*0.18f*pulse),2,Fade(accent,0.75f));
 }
 // ============================================================
 // DRAW CENTERED TEXT
@@ -341,13 +443,25 @@ void DrawCenteredText(const char *text, int y, int fontSize, Color color)
 
 bool DrawButton(Rectangle rect, const char *text, Color accent)
 {
-    bool hovered = CheckCollisionPointRec(GetMousePosition(), rect);
-    DrawRectangleRounded(rect, 0.08f, 8, Fade(hovered ? accent : PANEL_LIGHT, hovered ? 0.55f : 0.92f));
-    DrawRectangleRoundedLines(rect, 0.08f, 8, accent);
-    DrawRectangle((int)rect.x, (int)rect.y, 4, (int)rect.height, accent);
-    int size = 20, width = MeasureText(text, size);
-    DrawText(text, (int)(rect.x + (rect.width - width) / 2), (int)(rect.y + (rect.height - size) / 2), size, MY_WHITE);
-    return hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    static bool hoverWasActive = false;
+    static Rectangle lastHoverRect = { 0 };
+    bool hovered = CheckCollisionPointRec(GetMousePosition(),rect);
+    bool sameButton = lastHoverRect.x==rect.x && lastHoverRect.y==rect.y;
+    if (hovered && (!hoverWasActive || !sameButton)) PlayIfReady(gameSounds.hover);
+    if (hovered) { hoverWasActive=true; lastHoverRect=rect; }
+    else if (sameButton) hoverWasActive=false;
+
+    float pulse=0.5f+0.5f*sinf(fxTime*7.0f);
+    Rectangle drawRect=rect;
+    if (hovered) { drawRect.x-=2; drawRect.y-=2; drawRect.width+=4; drawRect.height+=4; }
+    DrawRectangleRounded(drawRect,0.08f,8,Fade(hovered ? accent : PANEL_LIGHT,hovered ? 0.72f : 0.92f));
+    DrawRectangleRoundedLines(drawRect,0.08f,8,Fade(accent,hovered ? 0.78f+0.22f*pulse : 0.72f));
+    DrawRectangle((int)drawRect.x,(int)drawRect.y,4,(int)drawRect.height,accent);
+    int size=20, width=MeasureText(text,size);
+    DrawText(text,(int)(drawRect.x+(drawRect.width-width)/2),(int)(drawRect.y+(drawRect.height-size)/2),size,MY_WHITE);
+    bool clicked=hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    if (clicked) PlayIfReady(gameSounds.click);
+    return clicked;
 }
 // ============================================================
 // ADD HISTORY
@@ -433,6 +547,9 @@ void ResolveChoice(int choice)
     AddHistory(resultMessage);
 
     selectedChoice = choice;
+    PlayIfReady(missionSuccess ? gameSounds.success : gameSounds.failure);
+    transitionFlash = 0.22f;
+    resultEffectTime = 0.85f;
 
     currentScreen = SCREEN_RESULT;
 }
@@ -761,6 +878,21 @@ void DrawResult()
 {
     DrawCyberBackground();
 
+    // Outcome impact ring and radial sparks.
+    if (resultEffectTime > 0.0f) {
+        float age=0.85f-resultEffectTime;
+        float radius=35.0f+age*250.0f;
+        Color impact=missionSuccess ? MY_GREEN : MY_RED;
+        DrawCircleLines(SCREEN_WIDTH/2,330,(int)radius,Fade(impact,resultEffectTime/0.85f));
+        DrawCircleLines(SCREEN_WIDTH/2,330,(int)(radius*0.78f),Fade(CYAN,resultEffectTime/1.2f));
+        for (int i=0; i<28; i++) {
+            float angle=(float)i*6.2831853f/28.0f+age*1.6f;
+            float distance=25.0f+age*(100.0f+(float)(i%5)*24.0f);
+            Vector2 spark={SCREEN_WIDTH/2.0f+cosf(angle)*distance,330.0f+sinf(angle)*distance};
+            DrawCircleV(spark,2.0f+(float)(i%3),Fade(i%3 ? impact : MY_YELLOW,resultEffectTime/0.85f));
+        }
+    }
+
     if (missionSuccess)
     {
         DrawCenteredText(
@@ -980,6 +1112,51 @@ void DrawGameComplete()
 // MAIN
 // ============================================================
 
+static void DrawLoadingScreen(void)
+{
+    float progress=loadingTime/3.4f;
+    if (progress>1.0f) progress=1.0f;
+    float pulse=0.5f+0.5f*sinf(fxTime*3.5f);
+    ClearBackground((Color){4,8,18,255});
+    for (int col=0; col<25; col++) {
+        int x=22+col*48;
+        int y=(int)fmodf(fxTime*100.0f+col*37.0f,SCREEN_HEIGHT+120)-60;
+        for (int row=0; row<6; row++) DrawText(((col+row)%2) ? "1":"0",x,y-row*23,15,Fade(CYAN,0.12f+row*0.025f));
+    }
+    Rectangle frame={115,92,970,610};
+    DrawRectangleRounded(frame,0.025f,8,Fade(PANEL,0.95f));
+    DrawRectangleRoundedLines(frame,0.025f,8,Fade(CYAN,0.55f+0.4f*pulse));
+    DrawCenteredText("CYBERPUNK CODEBREAKER",132,40,CYAN);
+    DrawCenteredText("SECURE BOOT // THREAT INTELLIGENCE SYSTEM",190,17,MY_GREEN);
+
+    Vector2 c={SCREEN_WIDTH/2.0f,360.0f};
+    DrawCircleLines((int)c.x,(int)c.y,104+5*pulse,Fade(CYAN,0.65f+0.3f*pulse));
+    DrawCircleLines((int)c.x,(int)c.y,82,Fade(MY_GREEN,0.5f));
+    DrawPoly(c,6,62,fxTime*20.0f,Fade(CYAN,0.18f));
+    DrawPolyLines(c,6,62,-fxTime*20.0f,Fade(CYAN,0.85f));
+    DrawRectangleRounded((Rectangle){c.x-32,c.y-8,64,51},0.16f,8,CYAN);
+    DrawCircleLines((int)c.x,(int)c.y-29,20,CYAN);
+    DrawRectangle((int)c.x-3,(int)c.y+8,6,18,PANEL);
+    float scanX=c.x-91+fmodf(fxTime*145.0f,182.0f);
+    DrawRectangle((int)scanX,250,3,220,Fade(MY_GREEN,0.75f));
+    DrawText("AUTHENTICATING ENCRYPTION KEYS",270,520,18,MY_WHITE);
+    DrawRectangle(270,555,660,24,(Color){18,32,48,255});
+    DrawRectangle(270,555,(int)(660*progress),24,CYAN);
+    DrawRectangleLines(270,555,660,24,Fade(CYAN,0.9f));
+    DrawText(TextFormat("%02d%%",(int)(progress*100)),945,557,19,MY_WHITE);
+    const char *status=progress<0.30f ? "CHECKING FIREWALL..." : progress<0.68f ? "SCANNING NETWORK..." : "SECURE CHANNEL READY...";
+    DrawCenteredText(status,618,19,MY_GRAY);
+}
+
+static void DrawTransitionOverlay(void)
+{
+    if (transitionFlash<=0.0f) return;
+    float alpha=transitionFlash/0.22f;
+    DrawRectangle(0,0,SCREEN_WIDTH,SCREEN_HEIGHT,Fade(CYAN,0.16f*alpha));
+    int y=(int)((1.0f-alpha)*SCREEN_HEIGHT);
+    DrawRectangle(0,y,SCREEN_WIDTH,2,Fade(MY_GREEN,alpha));
+}
+
 int main()
 {
     srand((unsigned int)time(NULL));
@@ -991,10 +1168,18 @@ int main()
         "Cyberpunk Codebreaker"
     );
 
+    LoadGameSounds();
+    InitEffects();
     SetTargetFPS(60);
 
     while (!WindowShouldClose() && gameRunning)
     {
+        float dt=GetFrameTime();
+        UpdateEffects(dt);
+        if (currentScreen==SCREEN_LOADING) {
+            loadingTime+=dt;
+            if (loadingTime>=3.4f) currentScreen=SCREEN_ALIAS;
+        }
         // ====================================================
         // UPDATE
         // ====================================================
@@ -1010,8 +1195,12 @@ int main()
 
         BeginDrawing();
 
+        GameScreen screenBeforeDraw=currentScreen;
         switch (currentScreen)
         {
+            case SCREEN_LOADING:
+                DrawLoadingScreen();
+                break;
             case SCREEN_ALIAS:
                 DrawAliasScreen();
                 break;
@@ -1041,9 +1230,15 @@ int main()
                 break;
         }
 
+        if (currentScreen!=screenBeforeDraw && screenBeforeDraw!=SCREEN_LOADING) {
+            PlayIfReady(gameSounds.transition);
+            if (transitionFlash<0.01f) transitionFlash=0.16f;
+        }
+        DrawTransitionOverlay();
         EndDrawing();
     }
 
+    UnloadGameSounds();
     CloseWindow();
 
     return 0;
