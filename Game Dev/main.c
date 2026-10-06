@@ -5,11 +5,22 @@
 #include <time.h>
 #include <math.h>
 
-//gcc main.c -o CyberpunkUpdated.exe -IC:\raylib\raylib\src -LC:\raylib\raylib\src -lraylib -lopengl32 -lgdi32 -lwinmm -lm
-//.\CyberpunkUpdated.exe
+/*
+ * CYBERPUNK CODEBREAKER — QUICK CODE MAP
+ * 1. Settings, structures, and mission data
+ * 2. Player/game state and palette
+ * 3. Audio and visual-effect helpers
+ * 4. Shared drawing helpers and achievement logic
+ * 5. Mission rules and screen functions
+ * 6. main(): initializes Raylib and runs the game loop
+ */
+
+//cd "C:\Users\AJ\OneDrive\Documents\CODES\Practice Codes\Game Dev"
+//gcc main.c -o main.exe -IC:\raylib\raylib\src -LC:\raylib\raylib\src -lraylib -lopengl32 -lgdi32 -lwinmm -lm
+//.\main.exe
 
 // ============================================================
-// SETTINGS
+// 1. SETTINGS AND GAME DATA
 // ============================================================
 
 #define SCREEN_WIDTH 1200
@@ -19,9 +30,7 @@
 #define MAX_ALIAS 30
 #define MISSION_COUNT 15
 
-// ============================================================
-// PLAYER
-// ============================================================
+// PLAYER AND HISTORY STRUCTURES
 
 typedef struct
 {
@@ -44,9 +53,7 @@ typedef struct
 HistoryEntry history[MAX_HISTORY];
 int historyCount = 0;
 
-// ============================================================
-// MISSION
-// ============================================================
+// MISSION STRUCTURE AND THE 15 MISSION DEFINITIONS
 
 typedef struct
 {
@@ -67,8 +74,17 @@ typedef struct
 
 } Mission;
 
+typedef struct
+{
+    const char *title;
+    const char *description;
+    int target;
+    int progress;
+    bool unlocked;
+} Achievement;
+
 // ============================================================
-// GAME STATES
+// 2. GAME STATES AND SHARED STATE
 // ============================================================
 
 typedef enum
@@ -80,6 +96,7 @@ typedef enum
     SCREEN_MISSION,
     SCREEN_RESULT,
     SCREEN_HISTORY,
+    SCREEN_ACHIEVEMENTS,
     SCREEN_GAME_COMPLETE
 
 } GameScreen;
@@ -278,6 +295,19 @@ Mission missions[MISSION_COUNT] = {
 int currentMission = -1;
 int selectedChoice = -1;
 
+#define ACHIEVEMENT_COUNT 5
+static Achievement achievements[ACHIEVEMENT_COUNT] = {
+    { "First Response", "Complete your first mission.", 1, 0, false },
+    { "Field Agent", "Complete five missions.", 5, 0, false },
+    { "Cyber Defender", "Successfully complete three missions.", 3, 0, false },
+    { "Trusted Operator", "Reach 50 reputation.", 50, 0, false },
+    { "Security Specialist", "Reach skill level 10.", 10, 0, false }
+};
+static int missionsCompleted = 0;
+static int missionsSucceeded = 0;
+static int latestAchievementIndex = -1;
+static float achievementToastTimer = 0.0f;
+
 int missionRoll = 0;
 int missionSuccess = 0;
 
@@ -289,7 +319,7 @@ int gameRunning = true;
 char aliasInput[MAX_ALIAS] = "";
 int aliasLength = 0;
 
-// Animation and optional audio effects. Sound files are safe to omit.
+// Animation and optional audio effects. Sound files are safe to omit sa folder.
 #define FX_PARTICLE_COUNT 72
 typedef struct { float x, y, speed, size, phase; } FxParticle;
 static FxParticle fxParticles[FX_PARTICLE_COUNT];
@@ -302,7 +332,7 @@ typedef struct { Sound hover, click, success, failure, transition; } GameSounds;
 static GameSounds gameSounds = { 0 };
 
 // ============================================================
-// COLORS
+// 3. COLORS, AUDIO, AND VISUAL EFFECTS
 // ============================================================
 
 Color BACKGROUND = {10, 10, 18, 255};
@@ -314,6 +344,8 @@ Color CYAN = {60, 200, 255, 255};
 Color MY_YELLOW = {245, 210, 70, 255};
 Color MY_WHITE = {240, 240, 240, 255};
 Color MY_GRAY = {160, 160, 175, 255};
+
+// AUDIO: short synthesized sounds; no external files (backup feature ng wav).
 
 static void PlayIfReady(Sound sound)
 {
@@ -378,6 +410,8 @@ static void UnloadGameSounds(void)
     audioReady = false;
 }
 
+// VISUAL EFFECTS AND SHARED BACKGROUND
+
 static void InitEffects(void)
 {
     for (int i=0; i<FX_PARTICLE_COUNT; i++) {
@@ -394,6 +428,7 @@ static void UpdateEffects(float dt)
     fxTime += dt;
     if (transitionFlash > 0.0f) transitionFlash -= dt;
     if (resultEffectTime > 0.0f) resultEffectTime -= dt;
+    if (achievementToastTimer > 0.0f) achievementToastTimer -= dt;
     for (int i=0; i<FX_PARTICLE_COUNT; i++) {
         fxParticles[i].y += fxParticles[i].speed*dt;
         if (fxParticles[i].y > SCREEN_HEIGHT) {
@@ -466,7 +501,7 @@ void DrawCenteredText(const char *text, int y, int fontSize, Color color)
 }
 
 // ============================================================
-// BUTTON
+// Button
 // ============================================================
 
 bool DrawButton(Rectangle rect, const char *text, Color accent)
@@ -491,9 +526,30 @@ bool DrawButton(Rectangle rect, const char *text, Color accent)
     if (clicked) PlayIfReady(gameSounds.click);
     return clicked;
 }
+
 // ============================================================
-// ADD HISTORY
+// 4. ACHIEVEMENTS AND SHARED GAME HELPERS
 // ============================================================
+
+static void UpdateAchievements(void)
+{
+    for (int i = 0; i < ACHIEVEMENT_COUNT; i++) {
+        switch (i) {
+            case 0: achievements[i].progress = missionsCompleted; break;
+            case 1: achievements[i].progress = missionsCompleted; break;
+            case 2: achievements[i].progress = missionsSucceeded; break;
+            case 3: achievements[i].progress = player.reputation; break;
+            case 4: achievements[i].progress = player.skillLevel; break;
+        }
+
+        if (achievements[i].progress >= achievements[i].target && !achievements[i].unlocked) {
+            achievements[i].unlocked = true;
+            latestAchievementIndex = i;
+            achievementToastTimer = 4.0f;
+            PlayIfReady(gameSounds.success);
+        }
+    }
+}
 
 void AddHistory(const char *message)
 {
@@ -572,6 +628,9 @@ void ResolveChoice(int choice)
         m->awarenessMessage
     );
 
+    missionsCompleted++;
+    if (missionSuccess) missionsSucceeded++;
+    UpdateAchievements();
     AddHistory(resultMessage);
 
     selectedChoice = choice;
@@ -596,8 +655,23 @@ void DrawStats()
     DrawText(TextFormat("Reputation: %d", player.reputation), 840, y + 65, 16, MY_YELLOW);
     DrawText(TextFormat("Skill Level: %d", player.skillLevel), 1010, y + 65, 16, MY_GREEN);
 }// ============================================================
-// ALIAS SCREEN
+// 5. SCREEN FUNCTIONS
 // ============================================================
+
+static void StartGameWithAlias(void)
+{
+    if (aliasLength == 0) {
+        strcpy(aliasInput, "Digital Rebel");
+        aliasLength = (int)strlen(aliasInput);
+    }
+
+    snprintf(player.alias, sizeof(player.alias), "%s", aliasInput);
+    player.reputation = 0;
+    player.skillLevel = 1;
+    currentScreen = SCREEN_MENU;
+}
+
+// ALIAS SCREEN
 void DrawAliasScreen()
 {
     DrawCyberBackground();
@@ -635,17 +709,7 @@ void DrawAliasScreen()
 
     if (DrawButton(startButton, "START GAME", MY_GREEN))
     {
-        if (aliasLength == 0)
-        {
-            strcpy(aliasInput, "Digital Rebel");
-        }
-
-        strcpy(player.alias, aliasInput);
-
-        player.reputation = 0;
-        player.skillLevel = 1;
-
-        currentScreen = SCREEN_MENU;
+        StartGameWithAlias();
     }
 
     DrawCenteredText(
@@ -691,14 +755,7 @@ void HandleAliasInput()
 
     if (IsKeyPressed(KEY_ENTER))
     {
-        if (aliasLength == 0)
-        {
-            strcpy(aliasInput, "Digital Rebel");
-        }
-
-        strcpy(player.alias, aliasInput);
-
-        currentScreen = SCREEN_MENU;
+        StartGameWithAlias();
     }
 }
 // ============================================================
@@ -707,64 +764,29 @@ void HandleAliasInput()
 void DrawMenu()
 {
     DrawCyberBackground();
-
-    DrawCenteredText(
-        "CYBERPUNK CODEBREAKER", 70, 45, CYAN
-    );
-
-    DrawCenteredText(
-        "MISSION CONTROL", 125, 22, MY_GREEN
-    );
-
+    DrawCenteredText("CYBERPUNK CODEBREAKER",70,45,CYAN);
+    DrawCenteredText("MISSION CONTROL",125,22,MY_GREEN);
     DrawStats();
 
-    Rectangle previewButton =
-    { 350, 210, 400, 60 };
+    const float x=350, width=400, height=54;
+    Rectangle previewButton={x,200,width,height};
+    Rectangle missionButton={x,270,width,height};
+    Rectangle historyButton={x,340,width,height};
+    Rectangle achievementButton={x,410,width,height};
+    Rectangle exitButton={x,480,width,height};
 
-    Rectangle missionButton =
-    { 350, 290, 400, 60 };
-
-    Rectangle historyButton =
-    { 350, 370, 400, 60 };
-
-    Rectangle exitButton =
-    { 350, 450, 400, 60 };
-
-    if (DrawButton(
-            previewButton,
-            "PREVIEW MISSIONS",
-            CYAN))
-    {
-        currentScreen =
-            SCREEN_MISSIONS;
-    }
-
-    if (DrawButton(
-            missionButton,
-            "PLAY RANDOM MISSION",
-            MY_GREEN))
-    {
+    if (DrawButton(previewButton,"PREVIEW MISSIONS",CYAN))
+        currentScreen=SCREEN_MISSIONS;
+    if (DrawButton(missionButton,"PLAY RANDOM MISSION",MY_GREEN))
         StartRandomMission();
-    }
-
-    if (DrawButton(
-            historyButton,
-            "MISSION HISTORY",
-            MY_YELLOW))
-    {
-        currentScreen =
-            SCREEN_HISTORY;
-    }
-
-    if (DrawButton(
-            exitButton,
-            "EXIT GAME",
-            MY_RED))
-    {
-        currentScreen =
-            SCREEN_GAME_COMPLETE;
-    }
+    if (DrawButton(historyButton,"MISSION HISTORY",MY_YELLOW))
+        currentScreen=SCREEN_HISTORY;
+    if (DrawButton(achievementButton,"ACHIEVEMENTS",CYAN))
+        currentScreen=SCREEN_ACHIEVEMENTS;
+    if (DrawButton(exitButton,"EXIT GAME",MY_RED))
+        currentScreen=SCREEN_GAME_COMPLETE;
 }
+
 // ============================================================
 // MISSION LIST
 // ============================================================
@@ -1010,14 +1032,12 @@ void DrawHistory()
     else
     {
         int visibleEntries = historyCount;
+        if (visibleEntries > 8) visibleEntries = 8;
+        int firstEntry = historyCount - visibleEntries;
 
-        if (visibleEntries > 8)
-            visibleEntries = 8;
-
-        for (int i = 0;
-             i < visibleEntries;
-             i++)
+        for (int i = 0; i < visibleEntries; i++)
         {
+            int entryIndex = firstEntry + i;
             int y = 130 + i * 55;
 
             DrawNeonPanel((Rectangle){ 70, y, 960, 45 }, CYAN);
@@ -1027,40 +1047,27 @@ void DrawHistory()
                     "%d.",
                     i + 1
                 ),
-                85,
-                y + 12,
-                17,
-                CYAN
+                85, y + 12, 17, CYAN
             );
 
             DrawText(
-                history[i].description,
-                120,
-                y + 12,
-                17,
-                MY_WHITE
+                history[entryIndex].description, 120, y + 12, 17, MY_WHITE
             );
 
             DrawText(
                 TextFormat(
                     "REP: %d",
-                    history[i].reputation
+                    history[entryIndex].reputation
                 ),
-                720,
-                y + 12,
-                16,
-                MY_YELLOW
+                720, y + 12, 16, MY_YELLOW
             );
 
             DrawText(
                 TextFormat(
                     "SKILL: %d",
-                    history[i].skillLevel
+                    history[entryIndex].skillLevel
                 ),
-                850,
-                y + 12,
-                16,
-                MY_GREEN
+                850, y + 12, 16, MY_GREEN
             );
         }
     }
@@ -1080,7 +1087,41 @@ void DrawHistory()
     }
 }
 // ============================================================
-// GAME COMPLETE
+// ACHIEVEMENTS SCREEN
+// ============================================================
+void DrawAchievements(void)
+{
+    DrawCyberBackground();
+    DrawCenteredText("ACHIEVEMENTS",72,38,CYAN);
+
+    int unlockedCount=0;
+    for (int i=0; i<ACHIEVEMENT_COUNT; i++)
+        if (achievements[i].unlocked) unlockedCount++;
+    DrawCenteredText(TextFormat("UNLOCKED: %d / %d",unlockedCount,ACHIEVEMENT_COUNT),112,18,MY_YELLOW);
+
+    for (int i=0; i<ACHIEVEMENT_COUNT; i++) {
+        Achievement *a=&achievements[i];
+        int y=145+i*92;
+        Color accent=a->unlocked ? MY_GREEN : CYAN;
+        DrawNeonPanel((Rectangle){100,y,1000,76},accent);
+        DrawText(a->unlocked ? "UNLOCKED" : "LOCKED",120,y+12,15,accent);
+        DrawText(a->title,260,y+10,21,MY_WHITE);
+        DrawText(a->description,260,y+40,16,MY_GRAY);
+        int shown=a->progress;
+        if (shown<0) shown=0;
+        if (shown>a->target) shown=a->target;
+        DrawText(TextFormat("%d / %d",shown,a->target),930,y+12,17,MY_YELLOW);
+        DrawRectangle(810,y+43,210,10,(Color){25,38,52,255});
+        DrawRectangle(810,y+43,(int)(210.0f*(float)shown/(float)a->target),10,accent);
+    }
+
+    Rectangle backButton={430,625,340,52};
+    if (DrawButton(backButton,"BACK TO MENU",CYAN))
+        currentScreen=SCREEN_MENU;
+}
+
+// ============================================================
+// GAME COMPLETE SCREEN
 // ============================================================
 void DrawGameComplete()
 {
@@ -1140,6 +1181,16 @@ void DrawGameComplete()
 // MAIN
 // ============================================================
 
+static void DrawAchievementToast(void)
+{
+    if (achievementToastTimer<=0.0f || latestAchievementIndex<0) return;
+    Achievement *a=&achievements[latestAchievementIndex];
+    Rectangle box={24,SCREEN_HEIGHT-96,520,70};
+    DrawNeonPanel(box,MY_YELLOW);
+    DrawText("ACHIEVEMENT UNLOCKED!",42,(int)box.y+10,17,MY_YELLOW);
+    DrawText(a->title,42,(int)box.y+36,21,MY_WHITE);
+}
+
 static void DrawLoadingScreen(void)
 {
     float progress=loadingTime/3.4f;
@@ -1185,6 +1236,9 @@ static void DrawTransitionOverlay(void)
     DrawRectangle(0,y,SCREEN_WIDTH,2,Fade(MY_GREEN,alpha));
 }
 
+//===============================================================================
+// 6. PROGRAM ENTRY: initialize Raylib, update state, and draw the active screen.
+//===============================================================================
 int main()
 {
     srand((unsigned int)time(NULL));
@@ -1253,6 +1307,10 @@ int main()
                 DrawHistory();
                 break;
 
+            case SCREEN_ACHIEVEMENTS:
+                DrawAchievements();
+                break;
+
             case SCREEN_GAME_COMPLETE:
                 DrawGameComplete();
                 break;
@@ -1262,6 +1320,7 @@ int main()
             PlayIfReady(gameSounds.transition);
             if (transitionFlash<0.01f) transitionFlash=0.16f;
         }
+        DrawAchievementToast();
         DrawTransitionOverlay();
         EndDrawing();
     }
